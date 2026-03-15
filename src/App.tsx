@@ -4,7 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import type { HistoryEntry, AppSettings } from "./types";
 
-type View = "history" | "settings";
+type View = "onboarding" | "history" | "settings";
 
 function App() {
   const [view, setView] = useState<View>("history");
@@ -12,6 +12,7 @@ function App() {
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [copied, setCopied] = useState<number | null>(null);
+  const [accessibilityOk, setAccessibilityOk] = useState(false);
 
   const loadHistory = useCallback(async () => {
     const entries = await invoke<HistoryEntry[]>("get_history");
@@ -21,18 +22,28 @@ function App() {
   const loadSettings = useCallback(async () => {
     const s = await invoke<AppSettings>("get_settings");
     setSettings(s);
+    // Show onboarding if no API key
+    if (!s.api_key) {
+      setView("onboarding");
+    }
+  }, []);
+
+  const checkAccessibility = useCallback(async () => {
+    const ok = await invoke<boolean>("check_accessibility");
+    setAccessibilityOk(ok);
   }, []);
 
   useEffect(() => {
     loadHistory();
     loadSettings();
+    checkAccessibility();
     const unlisten = listen("history-updated", () => {
       loadHistory();
     });
     return () => {
       unlisten.then((f) => f());
     };
-  }, [loadHistory, loadSettings]);
+  }, [loadHistory, loadSettings, checkAccessibility]);
 
   const copyText = async (text: string, id: number) => {
     await writeText(text);
@@ -55,6 +66,106 @@ function App() {
     return d.toLocaleString();
   };
 
+  // Onboarding view
+  if (view === "onboarding" && settings) {
+    return (
+      <div className="p-6 max-w-md mx-auto">
+        <div className="text-center mb-6">
+          <h1 className="text-xl font-semibold mb-1">NanoWhisper</h1>
+          <p className="text-xs" style={{ color: "var(--text-secondary)" }}>
+            Pure Whisper. Nothing else.
+          </p>
+        </div>
+
+        <div className="space-y-5">
+          {/* Step 1: API Key */}
+          <div>
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-xs font-medium px-2 py-0.5 rounded-full"
+                style={{ background: "var(--accent)", color: "white" }}>1</span>
+              <span className="text-sm font-medium">OpenAI API Key</span>
+              {settings.api_key && (
+                <span className="text-xs" style={{ color: "#34c759" }}>&#10003;</span>
+              )}
+            </div>
+            <input
+              type="password"
+              value={settings.api_key}
+              onChange={(e) => setSettings({ ...settings, api_key: e.target.value })}
+              placeholder="sk-proj-..."
+              className="w-full px-3 py-2 rounded-lg text-sm outline-none"
+              style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }}
+            />
+          </div>
+
+          {/* Step 2: Accessibility */}
+          <div>
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-xs font-medium px-2 py-0.5 rounded-full"
+                style={{ background: "var(--accent)", color: "white" }}>2</span>
+              <span className="text-sm font-medium">Accessibility Permission</span>
+              {accessibilityOk && (
+                <span className="text-xs" style={{ color: "#34c759" }}>&#10003;</span>
+              )}
+            </div>
+            <p className="text-xs mb-2" style={{ color: "var(--text-secondary)" }}>
+              Required to auto-paste transcribed text into your active app.
+            </p>
+            {accessibilityOk ? (
+              <p className="text-xs" style={{ color: "#34c759" }}>Permission granted</p>
+            ) : (
+              <button
+                onClick={async () => {
+                  await invoke("request_accessibility");
+                  // Poll for a few seconds
+                  for (let i = 0; i < 10; i++) {
+                    await new Promise((r) => setTimeout(r, 1000));
+                    const ok = await invoke<boolean>("check_accessibility");
+                    if (ok) { setAccessibilityOk(true); break; }
+                  }
+                }}
+                className="px-3 py-1.5 rounded-lg text-sm"
+                style={{ background: "var(--accent)", color: "white" }}
+              >
+                Grant Permission
+              </button>
+            )}
+          </div>
+
+          {/* Step 3: Info */}
+          <div>
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-xs font-medium px-2 py-0.5 rounded-full"
+                style={{ background: "var(--accent)", color: "white" }}>3</span>
+              <span className="text-sm font-medium">Ready</span>
+            </div>
+            <p className="text-xs" style={{ color: "var(--text-secondary)" }}>
+              Press <strong>{settings.shortcut}</strong> to start/stop recording.
+              Press <strong>Escape</strong> to cancel. Transcribed text will be auto-pasted.
+            </p>
+          </div>
+        </div>
+
+        <button
+          onClick={() => {
+            saveSettings();
+            setView("history");
+          }}
+          disabled={!settings.api_key}
+          className="w-full mt-6 py-2 rounded-lg text-sm font-medium"
+          style={{
+            background: settings.api_key ? "var(--accent)" : "var(--border)",
+            color: settings.api_key ? "white" : "var(--text-secondary)",
+            cursor: settings.api_key ? "pointer" : "not-allowed",
+          }}
+        >
+          Get Started
+        </button>
+      </div>
+    );
+  }
+
+  // Settings view
   if (view === "settings" && settings) {
     return (
       <div className="p-4 max-w-md mx-auto">
@@ -125,11 +236,32 @@ function App() {
               style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }}
             />
           </div>
+
+          <div>
+            <label className="block text-xs mb-1" style={{ color: "var(--text-secondary)" }}>Accessibility</label>
+            <div className="flex items-center gap-2">
+              {accessibilityOk ? (
+                <span className="text-xs" style={{ color: "#34c759" }}>&#10003; Granted</span>
+              ) : (
+                <button
+                  onClick={async () => {
+                    await invoke("request_accessibility");
+                    setTimeout(checkAccessibility, 2000);
+                  }}
+                  className="text-xs px-2 py-1 rounded"
+                  style={{ background: "var(--accent)", color: "white" }}
+                >
+                  Grant
+                </button>
+              )}
+            </div>
+          </div>
         </div>
       </div>
     );
   }
 
+  // History view
   return (
     <div className="p-4 max-w-md mx-auto">
       <div className="flex items-center justify-between mb-4">

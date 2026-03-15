@@ -4,5 +4,7 @@
 <dict>
     <key>NSMicrophoneUsageDescription</key>
     <string>NanoWhisper needs microphone access to record audio for transcription</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>NanoWhisper needs accessibility access to paste transcribed text into your active application</string>
 </dict>
 </plist>

@@ -1,5 +1,6 @@
 mod commands;
 mod history;
+pub mod paste;
 mod recorder;
 mod settings;
 mod transcribe;
@@ -27,6 +28,8 @@ pub fn run() {
             commands::clear_history,
             commands::get_settings,
             commands::save_settings,
+            commands::check_accessibility,
+            commands::request_accessibility,
         ])
         .setup(|app| {
             let app_handle = app.handle().clone();
@@ -272,8 +275,9 @@ fn stop_and_transcribe(app_handle: &tauri::AppHandle) {
             Ok(text) => {
                 println!("[NanoWhisper] Transcription: {}", text);
 
-                // Copy to clipboard
+                // Copy to clipboard and auto-paste
                 let _ = handle.clipboard().write_text(&text);
+                paste::simulate_paste();
 
                 // Save to history
                 let duration_ms = if sample_rate > 0 {

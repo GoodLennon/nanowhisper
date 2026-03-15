@@ -27,3 +27,13 @@ pub fn get_settings(app: tauri::AppHandle) -> AppSettings {
 pub fn save_settings(app: tauri::AppHandle, settings: AppSettings) {
     settings::save_settings(&app, &settings);
 }
+
+#[tauri::command]
+pub fn check_accessibility() -> bool {
+    crate::paste::is_accessibility_trusted()
+}
+
+#[tauri::command]
+pub fn request_accessibility() -> bool {
+    crate::paste::request_accessibility()
+}
