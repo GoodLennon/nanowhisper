@@ -31,6 +31,14 @@ pub fn is_accessibility_trusted() -> bool {
 pub fn request_accessibility_with_prompt() -> bool {
     #[cfg(target_os = "macos")]
     {
+        fn open_accessibility_settings() {
+            let _ = std::process::Command::new("open")
+                .arg(
+                    "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+                )
+                .spawn();
+        }
+
         // Don't prompt if already trusted
         if is_accessibility_trusted() {
             return true;
@@ -46,12 +54,18 @@ pub fn request_accessibility_with_prompt() -> bool {
             fn AXIsProcessTrustedWithOptions(options: *const std::ffi::c_void) -> bool;
         }
 
-        unsafe {
+        let trusted = unsafe {
             let key = CFString::wrap_under_get_rule(kAXTrustedCheckOptionPrompt as *const _);
             let dict: CFDictionary<CFString, CFBoolean> =
                 CFDictionary::from_CFType_pairs(&[(key, CFBoolean::true_value())]);
             AXIsProcessTrustedWithOptions(dict.as_concrete_TypeRef() as *const _)
+        };
+
+        if !trusted {
+            open_accessibility_settings();
         }
+
+        trusted
     }
     #[cfg(not(target_os = "macos"))]
     true
