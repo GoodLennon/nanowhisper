@@ -1,9 +1,11 @@
 mod commands;
 mod history;
+mod hotkey;
 pub mod paste;
 mod permissions;
 mod recorder;
 mod settings;
+mod sound;
 mod transcribe;
 
 use history::HistoryManager;
@@ -123,7 +125,36 @@ pub fn run() {
                 })
                 .build(app)?;
 
-            // Register global shortcut
+            // Start native hotkey monitor (Right Command on macOS, Right Ctrl on Windows)
+            let hotkey_handle = app_handle.clone();
+            hotkey::start(move || {
+                // Same debounce + CAS guard as the global shortcut path
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64;
+                let last = LAST_SHORTCUT_TIME.load(Ordering::SeqCst);
+                if now - last < DEBOUNCE_MS {
+                    return;
+                }
+                LAST_SHORTCUT_TIME.store(now, Ordering::SeqCst);
+
+                if SHORTCUT_PROCESSING
+                    .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_err()
+                {
+                    return;
+                }
+
+                log::info!("Native hotkey triggered");
+                let h = hotkey_handle.clone();
+                std::thread::spawn(move || {
+                    toggle_recording(&h);
+                    SHORTCUT_PROCESSING.store(false, Ordering::SeqCst);
+                });
+            });
+
+            // Register global shortcut (secondary, user-configurable)
             let settings = settings::get_settings();
             register_shortcut(&app_handle, &settings);
 
@@ -314,6 +345,7 @@ fn start_recording(app_handle: &tauri::AppHandle) {
         return;
     }
     log::info!("Recording started");
+    sound::play_start_sound();
 
     // Register Escape only while recording
     register_escape(app_handle);
@@ -324,6 +356,8 @@ fn stop_and_transcribe(app_handle: &tauri::AppHandle) {
 
     let recorder = app_handle.state::<Arc<AudioRecorder>>();
     let history = app_handle.state::<Arc<HistoryManager>>();
+
+    sound::play_stop_sound();
 
     // Notify overlay
     let _ = app_handle.emit("transcribing", ());

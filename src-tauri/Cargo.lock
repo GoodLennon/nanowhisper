@@ -2487,7 +2487,7 @@ dependencies = [
 
 [[package]]
 name = "nanowhisper"
-version = "0.1.0"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "block2",
@@ -2511,6 +2511,7 @@ dependencies = [
  "tauri-plugin-clipboard-manager",
  "tauri-plugin-global-shortcut",
  "tauri-plugin-opener",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

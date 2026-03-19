@@ -62,18 +62,20 @@ pub fn request_microphone() -> bool {
 
 #[tauri::command]
 pub fn pause_shortcut(app: AppHandle) {
+    crate::hotkey::pause();
     let settings = settings::get_settings();
     if let Ok(shortcut) = settings.shortcut.parse::<Shortcut>() {
         let _ = app.global_shortcut().unregister(shortcut);
-        log::info!("Shortcut paused for capture");
     }
+    log::info!("Shortcuts paused for capture");
 }
 
 #[tauri::command]
 pub fn resume_shortcut(app: AppHandle) {
+    crate::hotkey::resume();
     let settings = settings::get_settings();
     crate::register_shortcut(&app, &settings);
-    log::info!("Shortcut resumed");
+    log::info!("Shortcuts resumed");
 }
 
 #[tauri::command]
