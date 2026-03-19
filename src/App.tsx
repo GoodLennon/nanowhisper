@@ -469,8 +469,15 @@ function App() {
         </p>
       ) : (
         <div className="space-y-2">
-          {history.map((entry) => (
-            <div key={entry.id} className="rounded-lg p-3" style={{ background: "var(--card)", border: "1px solid var(--border)" }}>
+          {history.map((entry) => {
+            const isFailed = entry.text.startsWith("[Error:");
+            return (
+            <div key={entry.id} className="rounded-lg p-3" style={{ background: "var(--card)", border: isFailed ? "1px solid #ff453a40" : "1px solid var(--border)" }}>
+              {isFailed ? (
+                <div className="text-xs" style={{ color: "#ff453a" }}>
+                  {entry.text.slice(1, -1)}
+                </div>
+              ) : (
               <div
                 className="text-sm cursor-pointer"
                 onClick={() => setExpandedId(expandedId === entry.id ? null : entry.id)}
@@ -482,6 +489,7 @@ function App() {
                     ? entry.text.slice(0, 100) + "..."
                     : entry.text}
               </div>
+              )}
               <div className="flex items-center justify-between mt-2">
                 <div className="flex items-center gap-2">
                   {entry.duration_ms ? (
@@ -494,12 +502,14 @@ function App() {
                   </span>
                 </div>
                 <div className="flex gap-0.5">
+                  {!isFailed && (
                   <IconBtn onClick={() => copyText(entry.text, entry.id)} title="Copy" accent={copied === entry.id}>
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <rect x="9" y="9" width="13" height="13" rx="2" />
                       <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
                     </svg>
                   </IconBtn>
+                  )}
                   {entry.audio_path && (
                     <IconBtn onClick={() => retryEntry(entry.id)} title="Retry">
                       {retrying === entry.id ? (
@@ -523,7 +533,8 @@ function App() {
                 </div>
               </div>
             </div>
-          ))}
+          );
+          })}
         </div>
       )}
     </div>

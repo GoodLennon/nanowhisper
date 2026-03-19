@@ -380,6 +380,12 @@ fn stop_and_transcribe(app_handle: &tauri::AppHandle) {
 
     log::info!("Calling API with model={}...", model);
 
+    let duration_ms = if sample_rate > 0 {
+        Some((sample_count as i64 * 1000) / sample_rate as i64)
+    } else {
+        None
+    };
+
     tauri::async_runtime::spawn(async move {
         let lang = if language == "auto" {
             None
@@ -406,23 +412,22 @@ fn stop_and_transcribe(app_handle: &tauri::AppHandle) {
                 });
 
                 // Save to history
-                let duration_ms = if sample_rate > 0 {
-                    Some((sample_count as i64 * 1000) / sample_rate as i64)
-                } else {
-                    None
-                };
                 let _ = history.add_entry(&text, &model, duration_ms, Some(&audio_path_str));
-
-                // Notify main window to refresh
-                let _ = handle.emit("history-updated", ());
             }
             Err(e) => {
                 log::error!("Transcription failed: {}", e);
+
+                // Save failed entry to history so user can retry
+                let error_text = format!("[Error: {}]", e);
+                let _ = history.add_entry(&error_text, &model, duration_ms, Some(&audio_path_str));
+
                 let _ = handle.emit("transcription-error", e.to_string());
             }
         }
 
         close_overlay(&handle);
+        // Notify main window to refresh (both success and failure)
+        let _ = handle.emit("history-updated", ());
     });
 }
 
