@@ -50,6 +50,41 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Verify version consistency
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          TAG_VERSION="${TAG_NAME#v}"
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          CARGO_VERSION=$(grep '^version' src-tauri/Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          TAURI_VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
+
+          echo "Tag version:       $TAG_VERSION"
+          echo "package.json:      $PKG_VERSION"
+          echo "Cargo.toml:        $CARGO_VERSION"
+          echo "tauri.conf.json:   $TAURI_VERSION"
+
+          ERRORS=0
+          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::Version mismatch: package.json ($PKG_VERSION) != tag ($TAG_VERSION)"
+            ERRORS=1
+          fi
+          if [ "$CARGO_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::Version mismatch: Cargo.toml ($CARGO_VERSION) != tag ($TAG_VERSION)"
+            ERRORS=1
+          fi
+          if [ "$TAURI_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::Version mismatch: tauri.conf.json ($TAURI_VERSION) != tag ($TAG_VERSION)"
+            ERRORS=1
+          fi
+          if [ "$ERRORS" -ne 0 ]; then
+            echo "::error::Fix: update all version fields to $TAG_VERSION before tagging"
+            exit 1
+          fi
+          echo "Version verified: $TAG_VERSION"
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
