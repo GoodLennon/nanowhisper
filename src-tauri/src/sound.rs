@@ -4,25 +4,32 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-const AMPLITUDE: f32 = 0.3;
-const FADE_SECS: f32 = 0.005; // 5ms fade in/out to avoid clicks
+const AMPLITUDE: f32 = 0.10;
+const FADE_SECS: f32 = 0.015; // 15ms fade in/out
+const TONE_MS: u64 = 60; // each note duration
+const GAP_MS: u64 = 20; // silence between notes
 
-/// Short rising tone — played when recording starts.
+/// Ascending two-tone (C5→E5) — played BEFORE recording starts (blocking).
 pub fn play_start_sound() {
-    play_tone_async(800.0, 80);
+    if let Err(e) = play_two_tone(523.0, 659.0) {
+        log::warn!("Start sound failed: {}", e);
+    }
 }
 
-/// Short higher tone — played when recording stops.
+/// Descending two-tone (E5→C5) — played AFTER recording stops (async).
 pub fn play_stop_sound() {
-    play_tone_async(1000.0, 100);
-}
-
-fn play_tone_async(freq: f32, duration_ms: u64) {
-    std::thread::spawn(move || {
-        if let Err(e) = play_tone(freq, duration_ms) {
-            log::warn!("Sound playback failed: {}", e);
+    std::thread::spawn(|| {
+        if let Err(e) = play_two_tone(659.0, 523.0) {
+            log::warn!("Stop sound failed: {}", e);
         }
     });
+}
+
+fn play_two_tone(freq1: f32, freq2: f32) -> anyhow::Result<()> {
+    play_tone(freq1, TONE_MS)?;
+    std::thread::sleep(Duration::from_millis(GAP_MS));
+    play_tone(freq2, TONE_MS)?;
+    Ok(())
 }
 
 fn play_tone(freq: f32, duration_ms: u64) -> anyhow::Result<()> {
@@ -77,7 +84,6 @@ fn build_tone<T: SizedSample + FromSample<f32> + Send + 'static>(
                 let value = if i < total_samples {
                     let t = i as f32 / sample_rate;
                     let raw = (t * freq * std::f32::consts::TAU).sin() * AMPLITUDE;
-                    // Fade envelope to prevent click artifacts
                     let fade = if i < fade_len {
                         i as f32 / fade_len as f32
                     } else if i > total_samples - fade_len {

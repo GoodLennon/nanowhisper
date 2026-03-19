@@ -11,6 +11,8 @@ pub struct AppSettings {
     pub language: String,
     #[serde(default = "default_shortcut")]
     pub shortcut: String,
+    #[serde(default = "default_sound_enabled")]
+    pub sound_enabled: bool,
     #[serde(default)]
     pub overlay_x: Option<f64>,
     #[serde(default)]
@@ -27,7 +29,10 @@ fn default_language() -> String {
     "auto".to_string()
 }
 fn default_shortcut() -> String {
-    "CmdOrCtrl+Shift+Space".to_string()
+    String::new()
+}
+fn default_sound_enabled() -> bool {
+    true
 }
 
 impl Default for AppSettings {
@@ -37,6 +42,7 @@ impl Default for AppSettings {
             model: default_model(),
             language: default_language(),
             shortcut: default_shortcut(),
+            sound_enabled: default_sound_enabled(),
             overlay_x: None,
             overlay_y: None,
         }

@@ -63,6 +63,7 @@ pub fn start(callback: impl Fn() + Send + Sync + 'static) {
 mod platform {
     use super::*;
     use std::ffi::c_void;
+    use std::sync::atomic::AtomicIsize;
 
     // Opaque CF/CG types
     type CGEventRef = *mut c_void;
@@ -76,12 +77,14 @@ mod platform {
     // CGEvent constants
     const K_CG_EVENT_KEY_DOWN: u32 = 10;
     const K_CG_EVENT_FLAGS_CHANGED: u32 = 12;
+    const K_CG_EVENT_TAP_DISABLED_BY_TIMEOUT: u32 = 0xFFFF_FFFE;
+    const K_CG_EVENT_TAP_DISABLED_BY_USER_INPUT: u32 = 0xFFFF_FFFF;
     const K_CG_KEYBOARD_EVENT_KEYCODE: u32 = 9; // CGEventField
     const K_VK_RIGHT_COMMAND: i64 = 0x36;
-    const K_CG_EVENT_FLAG_MASK_COMMAND: u64 = 0x0010_0000;
+    const K_NX_DEVICE_RCMD_KEY_MASK: u64 = 0x0000_0010;
 
     // CGEventTap creation params
-    const K_CG_HID_EVENT_TAP: u32 = 0;
+    const K_CG_SESSION_EVENT_TAP: u32 = 1;
     const K_CG_HEAD_INSERT_EVENT_TAP: u32 = 0;
     const K_CG_EVENT_TAP_OPTION_LISTEN_ONLY: u32 = 1;
 
@@ -95,8 +98,11 @@ mod platform {
             callback: extern "C" fn(CGEventTapProxy, u32, CGEventRef, *mut c_void) -> CGEventRef,
             user_info: *mut c_void,
         ) -> CFMachPortRef;
+        fn CGEventTapEnable(tap: CFMachPortRef, enable: bool);
         fn CGEventGetIntegerValueField(event: CGEventRef, field: u32) -> i64;
         fn CGEventGetFlags(event: CGEventRef) -> u64;
+        fn CGPreflightListenEventAccess() -> bool;
+        fn CGRequestListenEventAccess() -> bool;
     }
 
     #[link(name = "CoreFoundation", kind = "framework")]
@@ -116,6 +122,7 @@ mod platform {
     static KEY_DOWN: AtomicBool = AtomicBool::new(false);
     static KEY_TIME: AtomicU64 = AtomicU64::new(0);
     static OTHER_KEY: AtomicBool = AtomicBool::new(false);
+    static TAP: AtomicIsize = AtomicIsize::new(0);
 
     extern "C" fn event_callback(
         _proxy: CGEventTapProxy,
@@ -123,17 +130,33 @@ mod platform {
         event: CGEventRef,
         _user_info: *mut c_void,
     ) -> CGEventRef {
+        if matches!(
+            event_type,
+            K_CG_EVENT_TAP_DISABLED_BY_TIMEOUT | K_CG_EVENT_TAP_DISABLED_BY_USER_INPUT
+        ) {
+            let tap = TAP.load(Ordering::SeqCst) as CFMachPortRef;
+            if !tap.is_null() {
+                unsafe { CGEventTapEnable(tap, true) };
+            }
+            return event;
+        }
+
+        if event.is_null() {
+            return event;
+        }
+
         unsafe {
             let keycode = CGEventGetIntegerValueField(event, K_CG_KEYBOARD_EVENT_KEYCODE);
             let flags = CGEventGetFlags(event);
 
             match event_type {
                 K_CG_EVENT_FLAGS_CHANGED if keycode == K_VK_RIGHT_COMMAND => {
-                    let cmd_down = (flags & K_CG_EVENT_FLAG_MASK_COMMAND) != 0;
-                    if cmd_down {
-                        KEY_DOWN.store(true, Ordering::SeqCst);
-                        KEY_TIME.store(now_ms(), Ordering::SeqCst);
-                        OTHER_KEY.store(false, Ordering::SeqCst);
+                    let right_cmd_down = (flags & K_NX_DEVICE_RCMD_KEY_MASK) != 0;
+                    if right_cmd_down {
+                        if !KEY_DOWN.swap(true, Ordering::SeqCst) {
+                            KEY_TIME.store(now_ms(), Ordering::SeqCst);
+                            OTHER_KEY.store(false, Ordering::SeqCst);
+                        }
                     } else if KEY_DOWN.swap(false, Ordering::SeqCst) {
                         let held = now_ms().saturating_sub(KEY_TIME.load(Ordering::SeqCst));
                         if !OTHER_KEY.load(Ordering::SeqCst) && held < SOLO_TAP_MAX_MS {
@@ -141,8 +164,13 @@ mod platform {
                         }
                     }
                 }
-                K_CG_EVENT_KEY_DOWN => {
+                K_CG_EVENT_FLAGS_CHANGED => {
                     if KEY_DOWN.load(Ordering::SeqCst) {
+                        OTHER_KEY.store(true, Ordering::SeqCst);
+                    }
+                }
+                K_CG_EVENT_KEY_DOWN => {
+                    if KEY_DOWN.load(Ordering::SeqCst) && keycode != K_VK_RIGHT_COMMAND {
                         OTHER_KEY.store(true, Ordering::SeqCst);
                     }
                 }
@@ -154,14 +182,20 @@ mod platform {
 
     pub fn start() {
         std::thread::spawn(|| {
-            let mask: u64 = (1 << K_CG_EVENT_KEY_DOWN) | (1 << K_CG_EVENT_FLAGS_CHANGED);
+            let mask: u64 = (1u64 << K_CG_EVENT_KEY_DOWN) | (1u64 << K_CG_EVENT_FLAGS_CHANGED);
 
-            // Retry loop — CGEventTap requires Accessibility permission which may
-            // not yet be granted at launch.
+            unsafe {
+                if !CGPreflightListenEventAccess() {
+                    let _ = CGRequestListenEventAccess();
+                }
+            }
+
+            // Retry loop — event listening requires Input Monitoring permission,
+            // which may not yet be granted at launch.
             loop {
                 let tap = unsafe {
                     CGEventTapCreate(
-                        K_CG_HID_EVENT_TAP,
+                        K_CG_SESSION_EVENT_TAP,
                         K_CG_HEAD_INSERT_EVENT_TAP,
                         K_CG_EVENT_TAP_OPTION_LISTEN_ONLY,
                         mask,
@@ -171,7 +205,9 @@ mod platform {
                 };
 
                 if !tap.is_null() {
+                    TAP.store(tap as isize, Ordering::SeqCst);
                     unsafe {
+                        CGEventTapEnable(tap, true);
                         let source =
                             CFMachPortCreateRunLoopSource(std::ptr::null(), tap, 0);
                         if source.is_null() {
@@ -186,7 +222,7 @@ mod platform {
                     return;
                 }
 
-                log::info!("CGEventTap unavailable (Accessibility not granted?), retrying in 2s…");
+                log::info!("CGEventTap unavailable (Input Monitoring not granted?), retrying in 2s…");
                 std::thread::sleep(Duration::from_secs(2));
             }
         });

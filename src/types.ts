@@ -12,6 +12,7 @@ export interface AppSettings {
   model: string;
   language: string;
   shortcut: string;
+  sound_enabled: boolean;
   overlay_x: number | null;
   overlay_y: number | null;
 }

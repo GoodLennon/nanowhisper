@@ -10,7 +10,10 @@ type View = "onboarding" | "history" | "settings";
 const isMac = navigator.userAgent.includes("Mac");
 const modKey = isMac ? "⌘" : "Ctrl";
 
+const defaultHotkey = isMac ? "Right ⌘" : "Right Ctrl";
+
 function displayShortcut(s: string): string {
+  if (!s) return defaultHotkey;
   return s
     .replace("CmdOrCtrl", modKey)
     .replace("Cmd", "⌘")
@@ -342,7 +345,7 @@ function App() {
                 Allow Accessibility
               </button>
             )}
-            <p className="text-xs mt-1" style={{ color: "var(--text-secondary)" }}>Required for auto-paste after transcription.</p>
+            <p className="text-xs mt-1" style={{ color: "var(--text-secondary)" }}>Required for auto-paste and keyboard shortcut.</p>
           </div>
 
           {/* Step 4: Shortcut */}
@@ -351,8 +354,11 @@ function App() {
               <span className="text-xs font-medium px-2 py-0.5 rounded-full" style={{ background: "var(--border)", color: "var(--text-secondary)" }}>4</span>
               <span className="text-sm font-medium">Shortcut</span>
             </div>
+            <p className="text-xs mb-1.5" style={{ color: "var(--text-secondary)" }}>
+              Default: {defaultHotkey}. Press to record, again to stop. Escape to cancel.
+            </p>
             <ShortcutInput shortcut={settings.shortcut} onCapture={(s) => setSettings({ ...settings, shortcut: s })} />
-            <p className="text-xs mt-1" style={{ color: "var(--text-secondary)" }}>Press to record, again to stop. Escape to cancel.</p>
+            <p className="text-xs mt-1" style={{ color: "var(--text-secondary)" }}>Optionally set a custom shortcut above.</p>
           </div>
         </div>
 
@@ -410,8 +416,35 @@ function App() {
             </select>
           </div>
           <div>
+            <div className="flex items-center justify-between">
+              <label className="block text-xs" style={{ color: "var(--text-secondary)" }}>Sound Effects</label>
+              <button
+                onClick={() => setSettings({ ...settings, sound_enabled: !settings.sound_enabled })}
+                className="relative w-10 h-5 rounded-full transition-colors"
+                style={{ background: settings.sound_enabled ? "var(--accent)" : "var(--border)" }}
+              >
+                <span
+                  className="absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform"
+                  style={{ left: settings.sound_enabled ? "calc(100% - 18px)" : "2px" }}
+                />
+              </button>
+            </div>
+          </div>
+          <div>
             <label className="block text-xs mb-1" style={{ color: "var(--text-secondary)" }}>Shortcut</label>
+            <p className="text-xs mb-1.5" style={{ color: "var(--text-secondary)" }}>
+              Default: {defaultHotkey}
+            </p>
             <ShortcutInput shortcut={settings.shortcut} onCapture={(s) => setSettings({ ...settings, shortcut: s })} />
+            {settings.shortcut && (
+              <button
+                onClick={() => setSettings({ ...settings, shortcut: "" })}
+                className="text-xs mt-1"
+                style={{ color: "var(--accent)" }}
+              >
+                Reset to default
+              </button>
+            )}
           </div>
           <div>
             <label className="block text-xs mb-1" style={{ color: "var(--text-secondary)" }}>Microphone</label>

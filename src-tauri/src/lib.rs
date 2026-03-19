@@ -126,19 +126,9 @@ pub fn run() {
                 .build(app)?;
 
             // Start native hotkey monitor (Right Command on macOS, Right Ctrl on Windows)
+            // hotkey.rs already has its own 500ms debounce, so we only need the CAS guard here.
             let hotkey_handle = app_handle.clone();
             hotkey::start(move || {
-                // Same debounce + CAS guard as the global shortcut path
-                let now = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_millis() as u64;
-                let last = LAST_SHORTCUT_TIME.load(Ordering::SeqCst);
-                if now - last < DEBOUNCE_MS {
-                    return;
-                }
-                LAST_SHORTCUT_TIME.store(now, Ordering::SeqCst);
-
                 if SHORTCUT_PROCESSING
                     .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
                     .is_err()
@@ -199,6 +189,9 @@ const DEBOUNCE_MS: u64 = 500;
 
 pub fn register_shortcut(app_handle: &tauri::AppHandle, settings: &AppSettings) {
     let shortcut_str = &settings.shortcut;
+    if shortcut_str.is_empty() {
+        return; // No custom shortcut configured; native hotkey only
+    }
     let shortcut: Shortcut = match shortcut_str.parse() {
         Ok(s) => s,
         Err(e) => {
@@ -339,13 +332,17 @@ fn start_recording(app_handle: &tauri::AppHandle) {
         Err(e) => log::error!("Failed to create overlay: {}", e),
     }
 
+    // Play start sound BEFORE opening mic (blocking) so it won't be recorded
+    if saved.sound_enabled {
+        sound::play_start_sound();
+    }
+
     if let Err(e) = recorder.start(app_handle.clone()) {
         log::error!("Failed to start recording: {}", e);
         close_overlay(app_handle);
         return;
     }
     log::info!("Recording started");
-    sound::play_start_sound();
 
     // Register Escape only while recording
     register_escape(app_handle);
@@ -356,8 +353,6 @@ fn stop_and_transcribe(app_handle: &tauri::AppHandle) {
 
     let recorder = app_handle.state::<Arc<AudioRecorder>>();
     let history = app_handle.state::<Arc<HistoryManager>>();
-
-    sound::play_stop_sound();
 
     // Notify overlay
     let _ = app_handle.emit("transcribing", ());
@@ -375,6 +370,11 @@ fn stop_and_transcribe(app_handle: &tauri::AppHandle) {
         audio.samples.len(),
         audio.sample_rate
     );
+
+    // Play stop sound AFTER mic is closed (async, won't be recorded)
+    if settings::get_settings().sound_enabled {
+        sound::play_stop_sound();
+    }
 
     let sample_count = audio.samples.len();
     let sample_rate = audio.sample_rate;
