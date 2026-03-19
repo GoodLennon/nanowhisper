@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
@@ -19,17 +19,106 @@ function displayShortcut(s: string): string {
     .replace(/\+/g, " ");
 }
 
-function keyEventToShortcut(e: React.KeyboardEvent): string | null {
-  const key = e.key;
-  if (["Control", "Shift", "Alt", "Meta"].includes(key)) return null;
-  const parts: string[] = [];
-  if (e.metaKey || e.ctrlKey) parts.push("CmdOrCtrl");
-  if (e.shiftKey) parts.push("Shift");
-  if (e.altKey) parts.push("Alt");
-  let mainKey = key.length === 1 ? key.toUpperCase() : key;
-  if (mainKey === " ") mainKey = "Space";
-  parts.push(mainKey);
-  return parts.join("+");
+/** Map KeyboardEvent.code to Tauri shortcut key name */
+function codeToTauriKey(code: string): string | null {
+  if (code.startsWith("Key") && code.length === 4) return code.charAt(3);
+  if (code.startsWith("Digit") && code.length === 6) return code.charAt(5);
+  if (/^F\d{1,2}$/.test(code)) return code;
+  const map: Record<string, string> = {
+    Space: "Space", Tab: "Tab", Enter: "Enter", Escape: "Escape",
+    Backspace: "Backspace", Delete: "Delete",
+    ArrowUp: "Up", ArrowDown: "Down", ArrowLeft: "Left", ArrowRight: "Right",
+    Home: "Home", End: "End", PageUp: "PageUp", PageDown: "PageDown",
+    Minus: "-", Equal: "=", BracketLeft: "[", BracketRight: "]",
+    Backslash: "\\", Semicolon: ";", Quote: "'",
+    Comma: ",", Period: ".", Slash: "/", Backquote: "`",
+  };
+  return map[code] ?? null;
+}
+
+function ShortcutInput({ shortcut, onCapture }: { shortcut: string; onCapture: (s: string) => void }) {
+  const [recording, setRecording] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const pausedRef = useRef(false);
+
+  useEffect(() => {
+    return () => {
+      if (pausedRef.current) {
+        invoke("resume_shortcut");
+        pausedRef.current = false;
+      }
+    };
+  }, []);
+
+  const handleClick = async () => {
+    if (recording) return;
+    if (!pausedRef.current) {
+      pausedRef.current = true;
+      await invoke("pause_shortcut");
+    }
+    setRecording(true);
+    setError(null);
+  };
+
+  const handleBlur = async () => {
+    setRecording(false);
+    if (pausedRef.current) {
+      pausedRef.current = false;
+      await invoke("resume_shortcut");
+    }
+  };
+
+  const handleKeyDown = async (e: React.KeyboardEvent) => {
+    if (!recording) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (["Control", "Shift", "Alt", "Meta"].includes(e.key)) return;
+    if (!e.metaKey && !e.ctrlKey && !e.altKey) {
+      setError("Shortcut must include a modifier key (Cmd/Ctrl/Alt)");
+      return;
+    }
+    const mainKey = codeToTauriKey(e.code);
+    if (!mainKey) return;
+    const parts: string[] = [];
+    if (e.metaKey || e.ctrlKey) parts.push("CmdOrCtrl");
+    if (e.shiftKey) parts.push("Shift");
+    if (e.altKey) parts.push("Alt");
+    parts.push(mainKey);
+    setError(null);
+    setRecording(false);
+    onCapture(parts.join("+"));
+    if (pausedRef.current) {
+      pausedRef.current = false;
+      await invoke("resume_shortcut");
+    }
+  };
+
+  return (
+    <div>
+      <div
+        tabIndex={0}
+        className="w-full px-3 py-2 rounded-lg text-sm outline-none text-center"
+        style={{
+          background: "var(--card)",
+          border: recording ? "1px solid var(--accent)" : error ? "1px solid #ff453a" : "1px solid var(--border)",
+          color: "var(--text)",
+          cursor: "pointer",
+        }}
+        onClick={handleClick}
+        onBlur={handleBlur}
+        onKeyDown={handleKeyDown}
+      >
+        {recording ? (
+          <span style={{ color: "var(--accent)" }}>Press shortcut keys...</span>
+        ) : (
+          displayShortcut(shortcut)
+        )}
+      </div>
+      {error && (
+        <p className="text-xs mt-1" style={{ color: "#ff453a" }}>{error}</p>
+      )}
+    </div>
+  );
 }
 
 function App() {
@@ -41,7 +130,7 @@ function App() {
   const [retrying, setRetrying] = useState<number | null>(null);
   const [microphoneOk, setMicrophoneOk] = useState(false);
   const [accessibilityOk, setAccessibilityOk] = useState(false);
-  const [recordingShortcut, setRecordingShortcut] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const loadHistory = useCallback(async () => {
     const entries = await invoke<HistoryEntry[]>("get_history");
@@ -86,11 +175,23 @@ function App() {
     loadHistory();
     loadSettings();
     checkPermissions();
-    const unlisten = listen("history-updated", () => loadHistory());
-    // Poll permissions every 2s while on onboarding
-    const permInterval = setInterval(checkPermissions, 2000);
-    return () => { unlisten.then((f) => f()); clearInterval(permInterval); };
+    const unlisten1 = listen("history-updated", () => loadHistory());
+    const unlisten2 = listen<string>("transcription-error", (e) => {
+      setErrorMsg(e.payload);
+      setTimeout(() => setErrorMsg(null), 5000);
+    });
+    return () => {
+      unlisten1.then((f) => f());
+      unlisten2.then((f) => f());
+    };
   }, [loadHistory, loadSettings, checkPermissions]);
+
+  // Poll permissions only until all granted
+  useEffect(() => {
+    if (microphoneOk && accessibilityOk) return;
+    const permInterval = setInterval(checkPermissions, 2000);
+    return () => clearInterval(permInterval);
+  }, [microphoneOk, accessibilityOk, checkPermissions]);
 
   useEffect(() => {
     if (!accessibilityOk) return;
@@ -155,52 +256,24 @@ function App() {
     return `${mins}m${remainSecs}s`;
   };
 
-  const ShortcutInput = () => (
-    <div
-      tabIndex={0}
-      className="w-full px-3 py-2 rounded-lg text-sm outline-none text-center"
-      style={{
-        background: "var(--card)",
-        border: recordingShortcut ? "1px solid var(--accent)" : "1px solid var(--border)",
-        color: "var(--text)",
-        cursor: "pointer",
-      }}
-      onClick={() => setRecordingShortcut(true)}
-      onBlur={() => setRecordingShortcut(false)}
-      onKeyDown={(e) => {
-        if (!recordingShortcut || !settings) return;
-        e.preventDefault();
-        const shortcut = keyEventToShortcut(e);
-        if (shortcut) {
-          setSettings({ ...settings, shortcut });
-          setRecordingShortcut(false);
-        }
-      }}
-    >
-      {recordingShortcut ? (
-        <span style={{ color: "var(--accent)" }}>Press shortcut keys...</span>
-      ) : (
-        displayShortcut(settings?.shortcut || "")
-      )}
-    </div>
-  );
-
-  const ActionBtn = ({ onClick, label, accent }: { onClick: () => void; label: string; accent?: boolean }) => (
+  const IconBtn = ({ onClick, title, children, accent }: { onClick: () => void; title: string; children: React.ReactNode; accent?: boolean }) => (
     <button
       onClick={onClick}
-      className="text-xs px-3 py-1 rounded-md"
+      title={title}
+      className="p-1.5 rounded-md"
       style={{
-        background: accent ? "var(--accent)" : "var(--border)",
-        color: accent ? "white" : "var(--text)",
+        background: accent ? "var(--accent)" : "transparent",
+        color: accent ? "white" : "var(--text-secondary)",
+        lineHeight: 0,
       }}
     >
-      {label}
+      {children}
     </button>
   );
 
   // Onboarding
   if (view === "onboarding" && settings) {
-    const canProceed = settings.api_key && microphoneOk;
+    const canProceed = settings.api_key && microphoneOk && (isMac ? accessibilityOk : true);
     return (
       <div className="p-6 max-w-md mx-auto">
         <div className="text-center mb-6">
@@ -247,13 +320,12 @@ function App() {
             <p className="text-xs mt-1" style={{ color: "var(--text-secondary)" }}>Required for voice recording.</p>
           </div>
 
-          {/* Step 3: Accessibility (optional) */}
+          {/* Step 3: Accessibility */}
           <div>
             <div className="flex items-center gap-2 mb-2">
-              <span className="text-xs font-medium px-2 py-0.5 rounded-full" style={{ background: "var(--border)", color: "var(--text-secondary)" }}>3</span>
+              <span className="text-xs font-medium px-2 py-0.5 rounded-full" style={{ background: "var(--accent)", color: "white" }}>3</span>
               <span className="text-sm font-medium">Accessibility</span>
               {accessibilityOk && <span style={{ color: "#34c759" }}>&#10003;</span>}
-              {!accessibilityOk && <span className="text-xs" style={{ color: "var(--text-secondary)" }}>(optional)</span>}
             </div>
             {accessibilityOk ? (
               <div className="px-3 py-2 rounded-lg text-sm" style={{ background: "var(--card)", border: "1px solid var(--border)", color: "#34c759" }}>Enabled</div>
@@ -261,12 +333,12 @@ function App() {
               <button
                 onClick={handleEnableAccessibility}
                 className="w-full px-3 py-2 rounded-lg text-sm font-medium"
-                style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }}
+                style={{ background: "var(--accent)", color: "white" }}
               >
-                Enable Auto-Paste
+                Allow Accessibility
               </button>
             )}
-            <p className="text-xs mt-1" style={{ color: "var(--text-secondary)" }}>Auto-paste into active app after transcription.</p>
+            <p className="text-xs mt-1" style={{ color: "var(--text-secondary)" }}>Required for auto-paste after transcription.</p>
           </div>
 
           {/* Step 4: Shortcut */}
@@ -275,7 +347,7 @@ function App() {
               <span className="text-xs font-medium px-2 py-0.5 rounded-full" style={{ background: "var(--border)", color: "var(--text-secondary)" }}>4</span>
               <span className="text-sm font-medium">Shortcut</span>
             </div>
-            <ShortcutInput />
+            <ShortcutInput shortcut={settings.shortcut} onCapture={(s) => setSettings({ ...settings, shortcut: s })} />
             <p className="text-xs mt-1" style={{ color: "var(--text-secondary)" }}>Press to record, again to stop. Escape to cancel.</p>
           </div>
         </div>
@@ -335,7 +407,7 @@ function App() {
           </div>
           <div>
             <label className="block text-xs mb-1" style={{ color: "var(--text-secondary)" }}>Shortcut</label>
-            <ShortcutInput />
+            <ShortcutInput shortcut={settings.shortcut} onCapture={(s) => setSettings({ ...settings, shortcut: s })} />
           </div>
           <div>
             <label className="block text-xs mb-1" style={{ color: "var(--text-secondary)" }}>Microphone</label>
@@ -357,7 +429,7 @@ function App() {
               <div className="px-3 py-2 rounded-lg text-sm" style={{ background: "var(--card)", border: "1px solid var(--border)", color: "#34c759" }}>Enabled</div>
             ) : (
               <button onClick={handleEnableAccessibility} className="w-full px-3 py-2 rounded-lg text-sm font-medium" style={{ background: "var(--accent)", color: "white" }}>
-                Open System Settings
+                Allow Accessibility
               </button>
             )}
           </div>
@@ -373,6 +445,12 @@ function App() {
         <h1 className="text-lg font-semibold">NanoWhisper</h1>
         <button onClick={() => setView("settings")} className="text-xl px-1" style={{ color: "var(--text-secondary)" }}>&#9881;</button>
       </div>
+
+      {errorMsg && (
+        <div className="mb-3 px-3 py-2 rounded-lg text-xs" style={{ background: "#ff453a20", border: "1px solid #ff453a40", color: "#ff453a" }}>
+          Transcription failed: {errorMsg}
+        </div>
+      )}
 
       {history.length === 0 ? (
         <p className="text-center py-8 text-sm" style={{ color: "var(--text-secondary)" }}>
@@ -398,18 +476,43 @@ function App() {
                     : entry.text}
               </div>
               <div className="flex items-center justify-between mt-2">
-                <span className="text-xs" style={{ color: "var(--text-secondary)" }}>
-                  {entry.duration_ms ? formatDuration(entry.duration_ms) + " · " : ""}{formatTime(entry.timestamp)}
-                </span>
-                <div className="flex gap-1">
-                  <ActionBtn onClick={() => copyText(entry.text, entry.id)} label={copied === entry.id ? "Copied!" : "Copy"} accent={copied === entry.id} />
+                <div className="flex items-center gap-2">
+                  {entry.duration_ms ? (
+                    <span className="text-xs font-medium px-1.5 py-0.5 rounded" style={{ background: "var(--border)", color: "var(--text)" }}>
+                      {formatDuration(entry.duration_ms)}
+                    </span>
+                  ) : null}
+                  <span className="text-xs" style={{ color: "var(--text-secondary)" }}>
+                    {formatTime(entry.timestamp)}
+                  </span>
+                </div>
+                <div className="flex gap-0.5">
+                  <IconBtn onClick={() => copyText(entry.text, entry.id)} title="Copy" accent={copied === entry.id}>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <rect x="9" y="9" width="13" height="13" rx="2" />
+                      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                    </svg>
+                  </IconBtn>
                   {entry.audio_path && (
-                    <ActionBtn
-                      onClick={() => retryEntry(entry.id)}
-                      label={retrying === entry.id ? "..." : "Retry"}
-                    />
+                    <IconBtn onClick={() => retryEntry(entry.id)} title="Retry">
+                      {retrying === entry.id ? (
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ animation: "spin 1s linear infinite" }}>
+                          <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+                        </svg>
+                      ) : (
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <polyline points="23 4 23 10 17 10" />
+                          <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
+                        </svg>
+                      )}
+                    </IconBtn>
                   )}
-                  <ActionBtn onClick={() => deleteEntry(entry.id)} label="Delete" />
+                  <IconBtn onClick={() => deleteEntry(entry.id)} title="Delete">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="3 6 5 6 21 6" />
+                      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                    </svg>
+                  </IconBtn>
                 </div>
               </div>
             </div>

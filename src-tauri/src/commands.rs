@@ -4,6 +4,7 @@ use crate::settings::{self, AppSettings};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_clipboard_manager::ClipboardExt;
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
 
 #[tauri::command]
 pub fn get_history(history: State<'_, Arc<HistoryManager>>) -> Result<Vec<HistoryEntry>, String> {
@@ -29,8 +30,14 @@ pub fn get_settings() -> AppSettings {
 }
 
 #[tauri::command]
-pub fn save_settings(settings: AppSettings) {
+pub fn save_settings(app: AppHandle, settings: AppSettings) {
+    let old_settings = settings::get_settings();
     settings::save_settings(&settings);
+
+    // Hot-reload shortcut if changed
+    if settings.shortcut != old_settings.shortcut {
+        crate::re_register_shortcut(&app, &old_settings.shortcut, &settings);
+    }
 }
 
 #[tauri::command]
@@ -54,6 +61,30 @@ pub fn request_microphone() -> bool {
 }
 
 #[tauri::command]
+pub fn pause_shortcut(app: AppHandle) {
+    let settings = settings::get_settings();
+    if let Ok(shortcut) = settings.shortcut.parse::<Shortcut>() {
+        let _ = app.global_shortcut().unregister(shortcut);
+        log::info!("Shortcut paused for capture");
+    }
+}
+
+#[tauri::command]
+pub fn resume_shortcut(app: AppHandle) {
+    let settings = settings::get_settings();
+    crate::register_shortcut(&app, &settings);
+    log::info!("Shortcut resumed");
+}
+
+#[tauri::command]
+pub fn save_overlay_position(x: f64, y: f64) {
+    let mut s = settings::get_settings();
+    s.overlay_x = Some(x);
+    s.overlay_y = Some(y);
+    settings::save_settings(&s);
+}
+
+#[tauri::command]
 pub fn initialize_enigo(app: AppHandle) -> Result<(), String> {
     if !crate::paste::is_accessibility_trusted() {
         return Err("Accessibility not granted".into());
@@ -74,11 +105,10 @@ pub async fn retry_transcription(
 ) -> Result<String, String> {
     use crate::transcribe;
 
-    // Get the entry to find audio_path
-    let entries = history.get_entries().map_err(|e| e.to_string())?;
-    let entry = entries
-        .iter()
-        .find(|e| e.id == id)
+    // Get the specific entry by ID
+    let entry = history
+        .get_entry_by_id(id)
+        .map_err(|e| e.to_string())?
         .ok_or("Entry not found")?;
     let audio_path = entry
         .audio_path
@@ -98,15 +128,17 @@ pub async fn retry_transcription(
     } else {
         Some(settings.language.as_str())
     };
-    let text = transcribe::transcribe_audio(&settings.api_key, &settings.model, wav_data, lang)
+
+    let client = app
+        .try_state::<reqwest::Client>()
+        .ok_or("HTTP client not initialized")?;
+    let text = transcribe::transcribe_audio(&client, &settings.api_key, &settings.model, wav_data, lang)
         .await
         .map_err(|e| e.to_string())?;
 
-    // Update history entry — delete old, add new with same audio
-    history.delete_entry(id).map_err(|e| e.to_string())?;
-    let duration_ms = entry.duration_ms;
+    // Update entry in place (preserves ID and audio_path)
     history
-        .add_entry(&text, &settings.model, duration_ms, Some(audio_path))
+        .update_entry(id, &text, &settings.model)
         .map_err(|e| e.to_string())?;
 
     // Copy + paste

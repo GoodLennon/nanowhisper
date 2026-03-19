@@ -74,3 +74,7 @@ select {
   background-position: right 10px center !important;
   padding-right: 28px !important;
 }
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}

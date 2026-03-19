@@ -11,6 +11,10 @@ pub struct AppSettings {
     pub language: String,
     #[serde(default = "default_shortcut")]
     pub shortcut: String,
+    #[serde(default)]
+    pub overlay_x: Option<f64>,
+    #[serde(default)]
+    pub overlay_y: Option<f64>,
 }
 
 fn default_api_key() -> String {
@@ -33,6 +37,8 @@ impl Default for AppSettings {
             model: default_model(),
             language: default_language(),
             shortcut: default_shortcut(),
+            overlay_x: None,
+            overlay_y: None,
         }
     }
 }

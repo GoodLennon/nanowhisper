@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use reqwest::multipart;
 
 pub async fn transcribe_audio(
+    client: &reqwest::Client,
     api_key: &str,
     model: &str,
     wav_data: Vec<u8>,
@@ -21,7 +22,6 @@ pub async fn transcribe_audio(
         }
     }
 
-    let client = reqwest::Client::new();
     let resp = client
         .post("https://api.openai.com/v1/audio/transcriptions")
         .bearer_auth(api_key)

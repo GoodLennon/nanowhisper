@@ -31,47 +31,25 @@ pub fn is_accessibility_trusted() -> bool {
 pub fn request_accessibility_with_prompt() -> bool {
     #[cfg(target_os = "macos")]
     {
-        fn open_accessibility_settings() {
-            let _ = std::process::Command::new("open")
-                .arg(
-                    "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
-                )
-                .spawn();
-        }
-
-        // Don't prompt if already trusted
         if is_accessibility_trusted() {
             return true;
         }
 
-        use core_foundation::base::TCFType;
-        use core_foundation::boolean::CFBoolean;
-        use core_foundation::dictionary::CFDictionary;
-        use core_foundation::string::CFString;
+        // Directly open System Settings to Accessibility page (no system dialog)
+        let _ = std::process::Command::new("open")
+            .arg(
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+            )
+            .spawn();
 
-        extern "C" {
-            static kAXTrustedCheckOptionPrompt: *const std::ffi::c_void;
-            fn AXIsProcessTrustedWithOptions(options: *const std::ffi::c_void) -> bool;
-        }
-
-        let trusted = unsafe {
-            let key = CFString::wrap_under_get_rule(kAXTrustedCheckOptionPrompt as *const _);
-            let dict: CFDictionary<CFString, CFBoolean> =
-                CFDictionary::from_CFType_pairs(&[(key, CFBoolean::true_value())]);
-            AXIsProcessTrustedWithOptions(dict.as_concrete_TypeRef() as *const _)
-        };
-
-        if !trusted {
-            open_accessibility_settings();
-        }
-
-        trusted
+        false
     }
     #[cfg(not(target_os = "macos"))]
     true
 }
 
-/// Simulate Cmd+V (macOS) or Ctrl+V (Windows/Linux) to paste clipboard content
+/// Simulate Cmd+V (macOS) or Ctrl+V (Windows/Linux) to paste clipboard content.
+/// Must be called from a dedicated OS thread, NOT from tokio async context.
 pub fn simulate_paste(app_handle: &AppHandle) -> Result<(), String> {
     // Auto-initialize if not yet done but accessibility is granted
     if app_handle.try_state::<EnigoState>().is_none() {
@@ -80,7 +58,7 @@ pub fn simulate_paste(app_handle: &AppHandle) -> Result<(), String> {
         }
         let state = EnigoState::new()?;
         app_handle.manage(state);
-        println!("[NanoWhisper] EnigoState auto-initialized");
+        log::info!("EnigoState auto-initialized");
     }
 
     let enigo_state = app_handle
@@ -90,8 +68,6 @@ pub fn simulate_paste(app_handle: &AppHandle) -> Result<(), String> {
         .0
         .lock()
         .map_err(|e| format!("Failed to lock Enigo: {}", e))?;
-
-    std::thread::sleep(std::time::Duration::from_millis(80));
 
     #[cfg(target_os = "macos")]
     let (modifier, v_key) = (Key::Meta, Key::Other(9));
@@ -105,14 +81,15 @@ pub fn simulate_paste(app_handle: &AppHandle) -> Result<(), String> {
     enigo
         .key(modifier, Direction::Press)
         .map_err(|e| format!("Failed to press modifier: {}", e))?;
+    std::thread::sleep(std::time::Duration::from_millis(20));
     enigo
         .key(v_key, Direction::Click)
         .map_err(|e| format!("Failed to click V: {}", e))?;
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    std::thread::sleep(std::time::Duration::from_millis(20));
     enigo
         .key(modifier, Direction::Release)
         .map_err(|e| format!("Failed to release modifier: {}", e))?;
 
-    println!("[NanoWhisper] Paste simulated");
+    log::info!("Paste simulated");
     Ok(())
 }

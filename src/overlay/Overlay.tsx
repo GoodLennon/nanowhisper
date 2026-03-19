@@ -1,13 +1,15 @@
 import { useState, useEffect, useRef } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { getCurrentWindow, PhysicalPosition } from "@tauri-apps/api/window";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 type OverlayState = "recording" | "transcribing";
 
-const COL_WIDTH = 2;
-const COL_GAP = 1;
-const CANVAS_HEIGHT = 40;
-const SAMPLE_EVERY_N_FRAMES = 4;
+const COL_WIDTH = 3;
+const COL_GAP = 2;
+const CANVAS_HEIGHT = 32;
+const SAMPLE_EVERY_N_FRAMES = 3;
+const AMPLITUDE_SCALE = 8;
 
 function Overlay() {
   const [state, setState] = useState<OverlayState>("recording");
@@ -16,14 +18,7 @@ function Overlay() {
   const historyRef = useRef<number[]>([]);
   const frameCountRef = useRef(0);
   const animRef = useRef<number>(0);
-  const dragRef = useRef<{
-    pointerId: number;
-    scaleFactor: number;
-    startMouseX: number;
-    startMouseY: number;
-    startWindowX: number;
-    startWindowY: number;
-  } | null>(null);
+  const saveTimerRef = useRef<number>(0);
 
   useEffect(() => {
     const unlisten1 = listen<number>("audio-level", (e) => {
@@ -38,6 +33,32 @@ function Overlay() {
     };
   }, []);
 
+  // Persist overlay position on drag (debounced)
+  useEffect(() => {
+    const currentWindow = getCurrentWindow();
+    const unlisten = currentWindow.onMoved(async () => {
+      clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = window.setTimeout(async () => {
+        try {
+          const [pos, scale] = await Promise.all([
+            currentWindow.outerPosition(),
+            currentWindow.scaleFactor(),
+          ]);
+          invoke("save_overlay_position", {
+            x: pos.x / scale,
+            y: pos.y / scale,
+          });
+        } catch {
+          // ignore errors during window close
+        }
+      }, 300);
+    });
+    return () => {
+      unlisten.then((f) => f());
+      clearTimeout(saveTimerRef.current);
+    };
+  }, []);
+
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas || state !== "recording") return;
@@ -45,7 +66,7 @@ function Overlay() {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    const canvasWidth = 300;
+    const canvasWidth = 280;
     const historyLength = Math.floor(canvasWidth / (COL_WIDTH + COL_GAP));
     historyRef.current = new Array(historyLength).fill(0);
     frameCountRef.current = 0;
@@ -57,7 +78,7 @@ function Overlay() {
 
     const draw = () => {
       const level = levelRef.current;
-      const amplitude = Math.min(1, level * 3);
+      const amplitude = Math.min(1, level * AMPLITUDE_SCALE);
 
       frameCountRef.current++;
       if (frameCountRef.current >= SAMPLE_EVERY_N_FRAMES) {
@@ -72,14 +93,20 @@ function Overlay() {
       ctx.clearRect(0, 0, canvasWidth, CANVAS_HEIGHT);
       const midY = CANVAS_HEIGHT / 2;
       const history = historyRef.current;
-
-      ctx.fillStyle = "rgba(56, 189, 248, 0.75)";
+      const maxHalfH = CANVAS_HEIGHT / 2 - 2;
+      const radius = COL_WIDTH / 2;
 
       for (let i = 0; i < history.length; i++) {
         const amp = history[i];
-        const halfH = Math.max(1, amp * (CANVAS_HEIGHT / 2 - 2));
+        const halfH = Math.max(1.5, amp * maxHalfH);
         const x = i * (COL_WIDTH + COL_GAP);
-        ctx.fillRect(x, midY - halfH, COL_WIDTH, halfH * 2);
+        const alpha = 0.35 + amp * 0.6;
+        ctx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
+        const barY = midY - halfH;
+        const barH = halfH * 2;
+        ctx.beginPath();
+        ctx.roundRect(x, barY, COL_WIDTH, barH, radius);
+        ctx.fill();
       }
 
       animRef.current = requestAnimationFrame(draw);
@@ -89,61 +116,27 @@ function Overlay() {
     return () => cancelAnimationFrame(animRef.current);
   }, [state]);
 
-  const handlePointerDown = async (e: React.PointerEvent<HTMLDivElement>) => {
-    if (e.button !== 0) return;
-
-    const currentWindow = getCurrentWindow();
-    const [position, scaleFactor] = await Promise.all([
-      currentWindow.outerPosition(),
-      currentWindow.scaleFactor(),
-    ]);
-
-    dragRef.current = {
-      pointerId: e.pointerId,
-      scaleFactor,
-      startMouseX: e.screenX,
-      startMouseY: e.screenY,
-      startWindowX: position.x,
-      startWindowY: position.y,
-    };
-    e.currentTarget.setPointerCapture(e.pointerId);
-  };
-
-  const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    const drag = dragRef.current;
-    if (!drag || drag.pointerId !== e.pointerId) return;
-
-    const nextX = Math.round(
-      drag.startWindowX + (e.screenX - drag.startMouseX) * drag.scaleFactor,
-    );
-    const nextY = Math.round(
-      drag.startWindowY + (e.screenY - drag.startMouseY) * drag.scaleFactor,
-    );
-
-    void getCurrentWindow().setPosition(new PhysicalPosition(nextX, nextY));
-  };
-
-  const handlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (dragRef.current?.pointerId !== e.pointerId) return;
-    dragRef.current = null;
-    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
-      e.currentTarget.releasePointerCapture(e.pointerId);
+  const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button === 0) {
+      getCurrentWindow().startDragging();
     }
   };
 
   return (
-    <div
-      className="overlay-body"
-      onPointerDown={handlePointerDown}
-      onPointerMove={handlePointerMove}
-      onPointerUp={handlePointerUp}
-      onPointerCancel={handlePointerUp}
-    >
-      <canvas
-        ref={canvasRef}
-        className="wave-canvas"
-        style={{ width: 300, height: CANVAS_HEIGHT }}
-      />
+    <div className="overlay-body" onPointerDown={handlePointerDown}>
+      {state === "transcribing" ? (
+        <div className="transcribing-dots" style={{ width: 280, height: CANVAS_HEIGHT }}>
+          <span className="dot" />
+          <span className="dot" />
+          <span className="dot" />
+        </div>
+      ) : (
+        <canvas
+          ref={canvasRef}
+          className="wave-canvas"
+          style={{ width: 280, height: CANVAS_HEIGHT }}
+        />
+      )}
     </div>
   );
 }

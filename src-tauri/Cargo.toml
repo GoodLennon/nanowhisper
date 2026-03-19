@@ -29,7 +29,6 @@ dirs = "6.0"
 dotenvy = "0.15"
 enigo = "0.6"
 log = "0.4"
-tokio = { version = "1", features = ["sync"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = { version = "0.6.2", default-features = false, features = ["alloc"] }

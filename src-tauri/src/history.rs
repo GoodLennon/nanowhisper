@@ -3,6 +3,7 @@ use rusqlite::Connection;
 use rusqlite_migration::{Migrations, M};
 use serde::Serialize;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 static MIGRATIONS: &[M] = &[
     M::up(
@@ -28,7 +29,8 @@ pub struct HistoryEntry {
 }
 
 pub struct HistoryManager {
-    db_path: PathBuf,
+    conn: Mutex<Connection>,
+    data_dir: PathBuf,
 }
 
 impl HistoryManager {
@@ -46,15 +48,14 @@ impl HistoryManager {
         let migrations = Migrations::new(MIGRATIONS.to_vec());
         migrations.to_latest(&mut conn)?;
 
-        Ok(Self { db_path })
-    }
-
-    fn conn(&self) -> Result<Connection> {
-        Ok(Connection::open(&self.db_path)?)
+        Ok(Self {
+            conn: Mutex::new(conn),
+            data_dir,
+        })
     }
 
     pub fn audio_dir(&self) -> PathBuf {
-        crate::data_dir().join("audio")
+        self.data_dir.join("audio")
     }
 
     pub fn add_entry(
@@ -64,7 +65,7 @@ impl HistoryManager {
         duration_ms: Option<i64>,
         audio_path: Option<&str>,
     ) -> Result<HistoryEntry> {
-        let conn = self.conn()?;
+        let conn = self.conn.lock().unwrap();
         let timestamp = chrono::Utc::now().timestamp();
         conn.execute(
             "INSERT INTO transcriptions (text, model, timestamp, duration_ms, audio_path) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -81,8 +82,38 @@ impl HistoryManager {
         })
     }
 
+    pub fn get_entry_by_id(&self, id: i64) -> Result<Option<HistoryEntry>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, text, model, timestamp, duration_ms, audio_path FROM transcriptions WHERE id = ?1",
+        )?;
+        let entry = stmt
+            .query_row([id], |row| {
+                Ok(HistoryEntry {
+                    id: row.get(0)?,
+                    text: row.get(1)?,
+                    model: row.get(2)?,
+                    timestamp: row.get(3)?,
+                    duration_ms: row.get(4)?,
+                    audio_path: row.get(5)?,
+                })
+            })
+            .ok();
+        Ok(entry)
+    }
+
+    pub fn update_entry(&self, id: i64, text: &str, model: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let timestamp = chrono::Utc::now().timestamp();
+        conn.execute(
+            "UPDATE transcriptions SET text = ?1, model = ?2, timestamp = ?3 WHERE id = ?4",
+            rusqlite::params![text, model, timestamp, id],
+        )?;
+        Ok(())
+    }
+
     pub fn get_entries(&self) -> Result<Vec<HistoryEntry>> {
-        let conn = self.conn()?;
+        let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, text, model, timestamp, duration_ms, audio_path FROM transcriptions ORDER BY timestamp DESC",
         )?;
@@ -103,7 +134,7 @@ impl HistoryManager {
 
     pub fn delete_entry(&self, id: i64) -> Result<()> {
         // Also delete audio file if exists
-        let conn = self.conn()?;
+        let conn = self.conn.lock().unwrap();
         let audio_path: Option<String> = conn
             .query_row(
                 "SELECT audio_path FROM transcriptions WHERE id = ?1",
@@ -126,7 +157,7 @@ impl HistoryManager {
             let _ = std::fs::remove_dir_all(&audio_dir);
             let _ = std::fs::create_dir_all(&audio_dir);
         }
-        let conn = self.conn()?;
+        let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM transcriptions", [])?;
         Ok(())
     }

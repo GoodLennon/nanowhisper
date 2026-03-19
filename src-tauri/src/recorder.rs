@@ -106,22 +106,32 @@ impl AudioRecorder {
 
             let mut buffer: Vec<f32> = Vec::new();
 
+            let drain_audio =
+                |audio_rx: &mpsc::Receiver<Vec<f32>>,
+                 buffer: &mut Vec<f32>,
+                 app_handle: &AppHandle| {
+                    while let Ok(chunk) = audio_rx.try_recv() {
+                        buffer.extend_from_slice(&chunk);
+
+                        if buffer.len() % 512 < chunk.len() {
+                            let recent = &buffer[buffer.len().saturating_sub(512)..];
+                            let rms = (recent.iter().map(|s| s * s).sum::<f32>()
+                                / recent.len() as f32)
+                                .sqrt();
+                            let _ = app_handle.emit("audio-level", rms.min(1.0));
+                        }
+                    }
+                };
+
             loop {
                 // Drain audio data
-                while let Ok(chunk) = audio_rx.try_recv() {
-                    buffer.extend_from_slice(&chunk);
+                drain_audio(&audio_rx, &mut buffer, &app_handle);
 
-                    if buffer.len() % 512 < chunk.len() {
-                        let recent = &buffer[buffer.len().saturating_sub(512)..];
-                        let rms = (recent.iter().map(|s| s * s).sum::<f32>() / recent.len() as f32)
-                            .sqrt();
-                        let _ = app_handle.emit("audio-level", rms.min(1.0));
-                    }
-                }
-
-                // Check commands
-                match cmd_rx.try_recv() {
+                // Check commands (blocking with timeout instead of polling)
+                match cmd_rx.recv_timeout(std::time::Duration::from_millis(5)) {
                     Ok(Cmd::Stop(reply)) => {
+                        // Drain remaining audio before returning
+                        drain_audio(&audio_rx, &mut buffer, &app_handle);
                         *is_recording.lock().unwrap() = false;
                         let audio = RecordedAudio {
                             samples: std::mem::take(&mut buffer),
@@ -134,11 +144,9 @@ impl AudioRecorder {
                         *is_recording.lock().unwrap() = false;
                         break;
                     }
-                    Err(mpsc::TryRecvError::Empty) => {}
-                    Err(mpsc::TryRecvError::Disconnected) => break,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 }
-
-                thread::sleep(std::time::Duration::from_millis(5));
             }
 
             drop(stream);
