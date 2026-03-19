@@ -1,12 +1,16 @@
 //! Native single-key hotkey monitoring.
 //!
 //! Detects a "solo tap" of Right Command (macOS) or Right Control (Windows):
-//!   1. Key pressed → mark pending
-//!   2. If any other key pressed while held → cancel (it's a combo like Cmd+C)
-//!   3. Key released within 400ms with no other keys → trigger callback
+//!   1. Key pressed -> mark pending
+//!   2. If any other key pressed while held -> cancel (it's a combo like Cmd+C)
+//!   3. Key released within 400ms with no other keys -> trigger callback
+//!
+//! macOS: Uses NSEvent global/local monitors (runs on NSApplication main RunLoop,
+//!        immune to App Nap — the OS keeps the app responsive while monitoring).
+//! Windows: Uses SetWindowsHookExW low-level keyboard hook.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
 /// Max duration (ms) between press and release to count as a "solo tap".
 const SOLO_TAP_MAX_MS: u64 = 400;
@@ -16,6 +20,7 @@ const DEBOUNCE_MS: u64 = 500;
 static CALLBACK: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>> = std::sync::OnceLock::new();
 static DEBOUNCE_LAST: AtomicU64 = AtomicU64::new(0);
 static PAUSED: AtomicBool = AtomicBool::new(false);
+static MONOTONIC_START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
 
 fn trigger_callback() {
     if PAUSED.load(Ordering::SeqCst) {
@@ -34,9 +39,9 @@ fn trigger_callback() {
 }
 
 fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
+    MONOTONIC_START
+        .get_or_init(Instant::now)
+        .elapsed()
         .as_millis() as u64
 }
 
@@ -50,182 +55,113 @@ pub fn resume() {
     PAUSED.store(false, Ordering::SeqCst);
 }
 
-/// Start the native hotkey monitor on a background thread.
-/// The callback is invoked (on its own thread) when a solo tap is detected.
+/// Start the native hotkey monitor.
+/// The callback is invoked when a solo tap is detected.
 pub fn start(callback: impl Fn() + Send + Sync + 'static) {
     let _ = CALLBACK.set(Box::new(callback));
     platform::start();
 }
 
-// ── macOS: CGEventTap ────────────────────────────────────────────────────────
+// ── macOS: NSEvent global + local monitors ───────────────────────────────────
+//
+// Unlike CGEventTap (which runs on a background thread's CFRunLoop and gets
+// throttled by App Nap when the app has no visible windows), NSEvent monitors
+// are serviced by the NSApplication main RunLoop. The OS knows the app is
+// actively monitoring global events and keeps it responsive.
+//
+// Two monitors are needed:
+//   - Global: fires when OTHER apps are focused
+//   - Local:  fires when OUR app is focused (global monitors don't fire for
+//             events directed at the monitoring app's own windows)
 
 #[cfg(target_os = "macos")]
 mod platform {
     use super::*;
-    use std::ffi::c_void;
-    use std::sync::atomic::AtomicIsize;
+    use block2::RcBlock;
+    use objc2::msg_send;
+    use objc2::runtime::{AnyClass, AnyObject};
+    use std::ptr::NonNull;
 
-    // Opaque CF/CG types
-    type CGEventRef = *mut c_void;
-    type CGEventTapProxy = *mut c_void;
-    type CFMachPortRef = *mut c_void;
-    type CFRunLoopRef = *mut c_void;
-    type CFRunLoopSourceRef = *mut c_void;
-    type CFAllocatorRef = *const c_void;
-    type CFStringRef = *const c_void;
+    // NSEventMask values
+    const NS_FLAGS_CHANGED_MASK: u64 = 1 << 12;
+    const NS_KEY_DOWN_MASK: u64 = 1 << 10;
 
-    // CGEvent constants
-    const K_CG_EVENT_KEY_DOWN: u32 = 10;
-    const K_CG_EVENT_FLAGS_CHANGED: u32 = 12;
-    const K_CG_EVENT_TAP_DISABLED_BY_TIMEOUT: u32 = 0xFFFF_FFFE;
-    const K_CG_EVENT_TAP_DISABLED_BY_USER_INPUT: u32 = 0xFFFF_FFFF;
-    const K_CG_KEYBOARD_EVENT_KEYCODE: u32 = 9; // CGEventField
-    const K_VK_RIGHT_COMMAND: i64 = 0x36;
-    const K_NX_DEVICE_RCMD_KEY_MASK: u64 = 0x0000_0010;
+    // Virtual key code for Right Command
+    const K_VK_RIGHT_COMMAND: u16 = 0x36;
 
-    // CGEventTap creation params
-    const K_CG_SESSION_EVENT_TAP: u32 = 1;
-    const K_CG_HEAD_INSERT_EVENT_TAP: u32 = 0;
-    const K_CG_EVENT_TAP_OPTION_LISTEN_ONLY: u32 = 1;
+    // NSEventModifierFlags — Command key bit
+    const NS_COMMAND_KEY_MASK: u64 = 1 << 20;
 
-    #[link(name = "CoreGraphics", kind = "framework")]
-    extern "C" {
-        fn CGEventTapCreate(
-            tap: u32,
-            place: u32,
-            options: u32,
-            events_of_interest: u64,
-            callback: extern "C" fn(CGEventTapProxy, u32, CGEventRef, *mut c_void) -> CGEventRef,
-            user_info: *mut c_void,
-        ) -> CFMachPortRef;
-        fn CGEventTapEnable(tap: CFMachPortRef, enable: bool);
-        fn CGEventGetIntegerValueField(event: CGEventRef, field: u32) -> i64;
-        fn CGEventGetFlags(event: CGEventRef) -> u64;
-        fn CGPreflightListenEventAccess() -> bool;
-        fn CGRequestListenEventAccess() -> bool;
-    }
-
-    #[link(name = "CoreFoundation", kind = "framework")]
-    extern "C" {
-        fn CFMachPortCreateRunLoopSource(
-            allocator: CFAllocatorRef,
-            port: CFMachPortRef,
-            order: i64,
-        ) -> CFRunLoopSourceRef;
-        fn CFRunLoopGetCurrent() -> CFRunLoopRef;
-        fn CFRunLoopAddSource(rl: CFRunLoopRef, source: CFRunLoopSourceRef, mode: CFStringRef);
-        fn CFRunLoopRun();
-        static kCFRunLoopCommonModes: CFStringRef;
-    }
-
-    // Per-tap state
     static KEY_DOWN: AtomicBool = AtomicBool::new(false);
     static KEY_TIME: AtomicU64 = AtomicU64::new(0);
     static OTHER_KEY: AtomicBool = AtomicBool::new(false);
-    static TAP: AtomicIsize = AtomicIsize::new(0);
 
-    extern "C" fn event_callback(
-        _proxy: CGEventTapProxy,
-        event_type: u32,
-        event: CGEventRef,
-        _user_info: *mut c_void,
-    ) -> CGEventRef {
-        if matches!(
-            event_type,
-            K_CG_EVENT_TAP_DISABLED_BY_TIMEOUT | K_CG_EVENT_TAP_DISABLED_BY_USER_INPUT
-        ) {
-            let tap = TAP.load(Ordering::SeqCst) as CFMachPortRef;
-            if !tap.is_null() {
-                unsafe { CGEventTapEnable(tap, true) };
+    /// Shared handler for both global and local monitors.
+    /// Works for both flagsChanged and keyDown events:
+    ///   - keyCode == 0x36 → Right Command press/release (flagsChanged)
+    ///   - any other keyCode while Right Cmd held → cancel solo tap
+    fn handle_event(event: &AnyObject) {
+        let keycode: u16 = unsafe { msg_send![event, keyCode] };
+        let flags: u64 = unsafe { msg_send![event, modifierFlags] };
+
+        if keycode == K_VK_RIGHT_COMMAND {
+            let cmd_down = (flags & NS_COMMAND_KEY_MASK) != 0;
+            if cmd_down {
+                // Right Command pressed
+                if !KEY_DOWN.swap(true, Ordering::SeqCst) {
+                    KEY_TIME.store(now_ms(), Ordering::SeqCst);
+                    OTHER_KEY.store(false, Ordering::SeqCst);
+                }
+            } else if KEY_DOWN.swap(false, Ordering::SeqCst) {
+                // Right Command released — check for solo tap
+                let held = now_ms().saturating_sub(KEY_TIME.load(Ordering::SeqCst));
+                if !OTHER_KEY.load(Ordering::SeqCst) && held < SOLO_TAP_MAX_MS {
+                    trigger_callback();
+                }
             }
-            return event;
+        } else if KEY_DOWN.load(Ordering::SeqCst) {
+            // Another key/modifier pressed while Right Cmd held → not a solo tap
+            OTHER_KEY.store(true, Ordering::SeqCst);
         }
-
-        if event.is_null() {
-            return event;
-        }
-
-        unsafe {
-            let keycode = CGEventGetIntegerValueField(event, K_CG_KEYBOARD_EVENT_KEYCODE);
-            let flags = CGEventGetFlags(event);
-
-            match event_type {
-                K_CG_EVENT_FLAGS_CHANGED if keycode == K_VK_RIGHT_COMMAND => {
-                    let right_cmd_down = (flags & K_NX_DEVICE_RCMD_KEY_MASK) != 0;
-                    if right_cmd_down {
-                        if !KEY_DOWN.swap(true, Ordering::SeqCst) {
-                            KEY_TIME.store(now_ms(), Ordering::SeqCst);
-                            OTHER_KEY.store(false, Ordering::SeqCst);
-                        }
-                    } else if KEY_DOWN.swap(false, Ordering::SeqCst) {
-                        let held = now_ms().saturating_sub(KEY_TIME.load(Ordering::SeqCst));
-                        if !OTHER_KEY.load(Ordering::SeqCst) && held < SOLO_TAP_MAX_MS {
-                            trigger_callback();
-                        }
-                    }
-                }
-                K_CG_EVENT_FLAGS_CHANGED => {
-                    if KEY_DOWN.load(Ordering::SeqCst) {
-                        OTHER_KEY.store(true, Ordering::SeqCst);
-                    }
-                }
-                K_CG_EVENT_KEY_DOWN => {
-                    if KEY_DOWN.load(Ordering::SeqCst) && keycode != K_VK_RIGHT_COMMAND {
-                        OTHER_KEY.store(true, Ordering::SeqCst);
-                    }
-                }
-                _ => {}
-            }
-        }
-        event
     }
 
     pub fn start() {
-        std::thread::spawn(|| {
-            let mask: u64 = (1u64 << K_CG_EVENT_KEY_DOWN) | (1u64 << K_CG_EVENT_FLAGS_CHANGED);
+        // flagsChanged: detects modifier key press/release (no special permissions)
+        // keyDown: detects regular keys pressed during hold (needs Accessibility)
+        let mask: u64 = NS_FLAGS_CHANGED_MASK | NS_KEY_DOWN_MASK;
 
-            unsafe {
-                if !CGPreflightListenEventAccess() {
-                    let _ = CGRequestListenEventAccess();
-                }
-            }
-
-            // Retry loop — event listening requires Input Monitoring permission,
-            // which may not yet be granted at launch.
-            loop {
-                let tap = unsafe {
-                    CGEventTapCreate(
-                        K_CG_SESSION_EVENT_TAP,
-                        K_CG_HEAD_INSERT_EVENT_TAP,
-                        K_CG_EVENT_TAP_OPTION_LISTEN_ONLY,
-                        mask,
-                        event_callback,
-                        std::ptr::null_mut(),
-                    )
-                };
-
-                if !tap.is_null() {
-                    TAP.store(tap as isize, Ordering::SeqCst);
-                    unsafe {
-                        CGEventTapEnable(tap, true);
-                        let source =
-                            CFMachPortCreateRunLoopSource(std::ptr::null(), tap, 0);
-                        if source.is_null() {
-                            log::error!("Failed to create CFRunLoopSource");
-                            return;
-                        }
-                        let rl = CFRunLoopGetCurrent();
-                        CFRunLoopAddSource(rl, source, kCFRunLoopCommonModes);
-                        log::info!("Native hotkey started (Right Command)");
-                        CFRunLoopRun(); // blocks
-                    }
-                    return;
-                }
-
-                log::info!("CGEventTap unavailable (Input Monitoring not granted?), retrying in 2s…");
-                std::thread::sleep(Duration::from_secs(2));
-            }
+        // Global monitor: fires when OTHER apps are focused
+        let global_block = RcBlock::new(|event: NonNull<AnyObject>| {
+            handle_event(unsafe { event.as_ref() });
         });
+
+        // Local monitor: fires when OUR app is focused; returns event to pass through
+        let local_block = RcBlock::new(|event: NonNull<AnyObject>| -> *mut AnyObject {
+            handle_event(unsafe { event.as_ref() });
+            event.as_ptr()
+        });
+
+        unsafe {
+            let cls = AnyClass::get(c"NSEvent").expect("NSEvent class not found");
+
+            let _: *mut AnyObject = msg_send![
+                cls,
+                addGlobalMonitorForEventsMatchingMask: mask,
+                handler: &*global_block
+            ];
+
+            let _: *mut AnyObject = msg_send![
+                cls,
+                addLocalMonitorForEventsMatchingMask: mask,
+                handler: &*local_block
+            ];
+        }
+
+        // Leak blocks to keep monitors alive for the app's lifetime
+        std::mem::forget(global_block);
+        std::mem::forget(local_block);
+
+        log::info!("Native hotkey started (Right Command via NSEvent monitors)");
     }
 }
 
@@ -234,6 +170,7 @@ mod platform {
 #[cfg(target_os = "windows")]
 mod platform {
     use super::*;
+    use std::time::Duration;
     use windows_sys::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         CallNextHookEx, GetMessageW, SetWindowsHookExW, KBDLLHOOKSTRUCT, MSG, WH_KEYBOARD_LL,
@@ -284,7 +221,7 @@ mod platform {
             HOOK.store(hook, Ordering::SeqCst);
             log::info!("Native hotkey started (Right Control)");
 
-            // Message pump — required for low-level keyboard hook to receive events.
+            // Message pump: required for low-level keyboard hook to receive events.
             let mut msg: MSG = std::mem::zeroed();
             while GetMessageW(&mut msg, 0, 0, 0) > 0 {}
         });
