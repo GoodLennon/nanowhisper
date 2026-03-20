@@ -290,57 +290,24 @@ jobs:
           generate_release_notes: true
           files: release/*
           body: |
-            ## NanoWhisper ${{ github.ref_name }}
+            ### macOS (signed & notarized)
+            | File | Architecture |
+            |------|-------------|
+            | `.dmg` (arm64) | Apple Silicon (M1/M2/M3/M4) — **Recommended** |
+            | `.dmg` (x64) | Intel (pre-2021 Macs) |
 
-            ### Downloads
-
-            #### macOS (signed & notarized)
-
-            | File | Architecture | Note |
-            |------|-------------|------|
-            | `.dmg` (arm64) | Apple Silicon (M1/M2/M3/M4) | **Recommended** — most Mac users |
-            | `.dmg` (x64) | Intel | For pre-2021 Macs |
-
-            #### Windows (signed)
-
+            ### Windows (signed)
             | File | Note |
             |------|------|
-            | `.exe` (NSIS installer) | **Recommended** — for most users |
-            | `.msi` (Windows Installer) | For enterprise / IT deployment |
+            | `.exe` | **Recommended** — NSIS installer |
+            | `.msi` | Enterprise / IT deployment |
 
-            #### Linux
-
-            | File | Distros | Note |
-            |------|---------|------|
-            | `.deb` | Ubuntu, Debian, Mint | **Recommended** |
-            | `.rpm` | Fedora, RHEL, CentOS, openSUSE | |
-            | `.AppImage` | Universal | Portable, no installation needed |
-
-            > **Not sure which to pick?** Choose the **Recommended** option.
-
-            ---
-
-            ### Installation Notes
-
-            **Linux:**
-            ```bash
-            # Debian / Ubuntu / Mint
-            sudo dpkg -i NanoWhisper_*.deb
-
-            # Fedora / RHEL
-            sudo dnf install NanoWhisper-*.rpm
-
-            # AppImage (portable)
-            chmod +x NanoWhisper_*.AppImage
-            ./NanoWhisper_*.AppImage
-            ```
-
-            ### Verify Downloads
-
-            Download `SHA256SUMS.txt` and verify:
-            ```bash
-            sha256sum -c SHA256SUMS.txt
-            ```
+            ### Linux
+            | File | Distros |
+            |------|---------|
+            | `.deb` | Ubuntu, Debian, Mint — **Recommended** |
+            | `.rpm` | Fedora, RHEL, openSUSE |
+            | `.AppImage` | Universal (portable) |
 
       # Clean up temporary build artifacts to free storage quota
       - name: Delete temporary build artifacts
