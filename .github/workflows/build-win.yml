@@ -41,45 +41,21 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Setup code signing
-        shell: pwsh
-        run: |
-          cargo install trusted-signing-cli
-          # Ensure cargo bin is in PATH for Tauri's subprocess
-          $cargoBin = Join-Path $env:USERPROFILE ".cargo\bin"
-          echo $cargoBin >> $env:GITHUB_PATH
-          # Verify installation
-          $cli = Join-Path $cargoBin "trusted-signing-cli.exe"
-          if (-not (Test-Path $cli)) {
-            Write-Error "trusted-signing-cli not found at $cli"
-            Get-ChildItem $cargoBin
-            exit 1
-          }
-          & $cli --version
+      - name: Build Tauri app
+        run: npx tauri build --target x86_64-pc-windows-msvc
 
-      - name: Build Tauri app (signed)
-        env:
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-        shell: pwsh
-        run: |
-          # Resolve full path to avoid PATH lookup issues in Tauri subprocess
-          $cargoBin = Join-Path $env:USERPROFILE ".cargo\bin"
-          $cli = (Join-Path $cargoBin "trusted-signing-cli.exe") -replace '\\', '/'
-          $signConfig = @"
-          {
-            "bundle": {
-              "windows": {
-                "signCommand": "$cli -e https://eus.codesigning.azure.net -a golemancy -c golemancy -d NanoWhisper %1"
-              }
-            }
-          }
-          "@
-          $configPath = Join-Path $env:RUNNER_TEMP "tauri-sign.json"
-          [System.IO.File]::WriteAllText($configPath, $signConfig.Trim(), [System.Text.UTF8Encoding]::new($false))
-          Write-Host "Sign config:" ; Get-Content $configPath
-          npx tauri build --target x86_64-pc-windows-msvc --config $configPath
+      - name: Sign Windows artifacts
+        uses: azure/trusted-signing-action@v0.5.0
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: https://eus.codesigning.azure.net/
+          trusted-signing-account-name: golemancy
+          certificate-profile-name: golemancy
+          files-folder: src-tauri/target/x86_64-pc-windows-msvc/release/bundle
+          files-folder-filter: exe,msi
+          files-folder-depth: 5
 
       - name: Verify code signing
         shell: pwsh

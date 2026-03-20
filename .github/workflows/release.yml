@@ -155,23 +155,7 @@ jobs:
 
           rm "$CERTIFICATE_PATH"
 
-      # ── Windows code signing setup ──────────────────────────────
-      - name: Setup Windows code signing
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          cargo install trusted-signing-cli
-          # Ensure cargo bin is in PATH for Tauri's subprocess
-          $cargoBin = Join-Path $env:USERPROFILE ".cargo\bin"
-          echo $cargoBin >> $env:GITHUB_PATH
-          # Verify installation
-          $cli = Join-Path $cargoBin "trusted-signing-cli.exe"
-          if (-not (Test-Path $cli)) {
-            Write-Error "trusted-signing-cli not found at $cli"
-            Get-ChildItem $cargoBin
-            exit 1
-          }
-          & $cli --version
+      # (Windows signing is done post-build via azure/trusted-signing-action)
 
       # ── Platform-specific builds ────────────────────────────────
       - name: Build Tauri app (macOS, signed + notarized)
@@ -183,30 +167,23 @@ jobs:
           APPLE_TEAM_ID: NDX2ZZ8U2R
         run: npx tauri build --target ${{ matrix.target }}
 
-      - name: Build Tauri app (Windows, signed)
+      - name: Build Tauri app (Windows)
         if: runner.os == 'Windows'
-        env:
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-        shell: pwsh
-        run: |
-          # Resolve full path to avoid PATH lookup issues in Tauri subprocess
-          $cargoBin = Join-Path $env:USERPROFILE ".cargo\bin"
-          $cli = (Join-Path $cargoBin "trusted-signing-cli.exe") -replace '\\', '/'
-          $signConfig = @"
-          {
-            "bundle": {
-              "windows": {
-                "signCommand": "$cli -e https://eus.codesigning.azure.net -a golemancy -c golemancy -d NanoWhisper %1"
-              }
-            }
-          }
-          "@
-          $configPath = Join-Path $env:RUNNER_TEMP "tauri-sign.json"
-          [System.IO.File]::WriteAllText($configPath, $signConfig.Trim(), [System.Text.UTF8Encoding]::new($false))
-          Write-Host "Sign config:" ; Get-Content $configPath
-          npx tauri build --target ${{ matrix.target }} --config $configPath
+        run: npx tauri build --target ${{ matrix.target }}
+
+      - name: Sign Windows artifacts
+        if: runner.os == 'Windows'
+        uses: azure/trusted-signing-action@v0.5.0
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: https://eus.codesigning.azure.net/
+          trusted-signing-account-name: golemancy
+          certificate-profile-name: golemancy
+          files-folder: src-tauri/target/${{ matrix.target }}/release/bundle
+          files-folder-filter: exe,msi
+          files-folder-depth: 5
 
       - name: Build Tauri app (Linux)
         if: runner.os == 'Linux'
