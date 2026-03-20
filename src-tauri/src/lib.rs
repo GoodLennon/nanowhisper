@@ -323,6 +323,7 @@ fn start_recording(app_handle: &tauri::AppHandle) {
     .transparent(true)
     .always_on_top(true)
     .skip_taskbar(true)
+    .shadow(false)
     .focused(false)
     .accept_first_mouse(true)
     .build()
