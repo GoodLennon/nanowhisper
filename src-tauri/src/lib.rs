@@ -212,10 +212,10 @@ pub fn run() {
             let separator = tauri::menu::PredefinedMenuItem::separator(app)?;
             let menu = tauri::menu::Menu::with_items(app, &[&show_i, &separator, &quit_i])?;
 
-            let tray_icon = app
-                .default_window_icon()
-                .cloned()
-                .expect("No default window icon configured");
+            let tray_icon = tauri::image::Image::from_bytes(
+                include_bytes!("../icons/tray-icon.png"),
+            )
+            .expect("Failed to load tray icon");
 
             tauri::tray::TrayIconBuilder::new()
                 .icon(tray_icon)

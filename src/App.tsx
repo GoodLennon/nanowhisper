@@ -531,6 +531,7 @@ function App() {
               </button>
             )}
           </div>
+          <p className="text-center text-xs pt-2" style={{ color: "var(--text-secondary)", opacity: 0.5 }}>v{__APP_VERSION__}</p>
         </div>
       </div>
     );
