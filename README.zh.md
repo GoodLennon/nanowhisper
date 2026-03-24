@@ -26,7 +26,7 @@
 
 NanoWhisper 是一个极简的桌面语音转文字工具。按下快捷键，说话，转写的文字自动粘贴到你正在使用的应用中。就这么简单。
 
-基于 OpenAI Whisper API，使用 Tauri v2 构建。
+基于 OpenAI Whisper API 和 Google Gemini，使用 Tauri v2 构建。
 
 ## 使用方式
 
