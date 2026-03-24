@@ -14,9 +14,9 @@ pub struct AppSettings {
     #[serde(default = "default_sound_enabled")]
     pub sound_enabled: bool,
     #[serde(default)]
-    pub overlay_x: Option<f64>,
+    pub overlay_rx: Option<f64>,
     #[serde(default)]
-    pub overlay_y: Option<f64>,
+    pub overlay_ry: Option<f64>,
 }
 
 fn default_api_key() -> String {
@@ -43,8 +43,8 @@ impl Default for AppSettings {
             language: default_language(),
             shortcut: default_shortcut(),
             sound_enabled: default_sound_enabled(),
-            overlay_x: None,
-            overlay_y: None,
+            overlay_rx: None,
+            overlay_ry: None,
         }
     }
 }

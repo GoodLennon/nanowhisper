@@ -91,10 +91,11 @@ pub fn resume_shortcut(app: AppHandle) {
 }
 
 #[tauri::command]
-pub fn save_overlay_position(x: f64, y: f64) {
+pub fn save_overlay_position(app: AppHandle, x: f64, y: f64) {
+    let (sx, sy, sw, sh) = crate::cursor_screen_bounds(&app);
     let mut s = settings::get_settings();
-    s.overlay_x = Some(x);
-    s.overlay_y = Some(y);
+    s.overlay_rx = Some(((x - sx) / sw).clamp(0.0, 1.0));
+    s.overlay_ry = Some(((y - sy) / sh).clamp(0.0, 1.0));
     settings::save_settings(&s);
 }
 

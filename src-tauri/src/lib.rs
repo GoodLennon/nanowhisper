@@ -32,21 +32,25 @@ const OVERLAY_HEIGHT: f64 = 48.0;
 const OVERLAY_BOTTOM_OFFSET: f64 = 80.0;
 const PASTE_DELAY_MS: u64 = 350;
 
-fn default_overlay_position(app_handle: &tauri::AppHandle) -> (f64, f64) {
+/// Returns (x, y, width, height) of the screen containing the cursor,
+/// in logical coordinates with top-left origin.
+pub fn cursor_screen_bounds(app_handle: &tauri::AppHandle) -> (f64, f64, f64, f64) {
     #[cfg(target_os = "macos")]
-    if let Some((mx, my, mw, mh)) = macos_cursor_screen_bounds() {
-        return (
-            mx + (mw - OVERLAY_WIDTH) / 2.0,
-            my + mh - OVERLAY_HEIGHT - OVERLAY_BOTTOM_OFFSET,
-        );
+    if let Some(bounds) = macos_cursor_screen_bounds() {
+        return bounds;
     }
     if let Some(monitor) = app_handle.primary_monitor().ok().flatten() {
         let scale = monitor.scale_factor();
-        let mw = monitor.size().width as f64 / scale;
-        let mh = monitor.size().height as f64 / scale;
-        ((mw - OVERLAY_WIDTH) / 2.0, mh - OVERLAY_HEIGHT - OVERLAY_BOTTOM_OFFSET)
+        let pos = monitor.position();
+        let size = monitor.size();
+        (
+            pos.x as f64 / scale,
+            pos.y as f64 / scale,
+            size.width as f64 / scale,
+            size.height as f64 / scale,
+        )
     } else {
-        (400.0, 800.0)
+        (0.0, 0.0, 1920.0, 1080.0)
     }
 }
 
@@ -130,11 +134,12 @@ fn macos_configure_and_show_overlay(
                             ns_window,
                             setCollectionBehavior: existing | (1u64 << 0) | (1u64 << 8)
                         ];
+                        // Show without activating app (preserves focus on user's current app)
+                        let _: () = msg_send![ns_window, orderFrontRegardless];
                     }
                 }
             }
         }
-        let _ = window.show();
     });
 }
 
@@ -402,10 +407,11 @@ fn start_recording(app_handle: &tauri::AppHandle) {
     let recorder = app_handle.state::<Arc<AudioRecorder>>();
 
     let saved = settings::get_settings();
-    let (pos_x, pos_y) = if let (Some(x), Some(y)) = (saved.overlay_x, saved.overlay_y) {
-        (x, y)
+    let (sx, sy, sw, sh) = cursor_screen_bounds(app_handle);
+    let (pos_x, pos_y) = if let (Some(rx), Some(ry)) = (saved.overlay_rx, saved.overlay_ry) {
+        (sx + rx * sw, sy + ry * sh)
     } else {
-        default_overlay_position(app_handle)
+        (sx + (sw - OVERLAY_WIDTH) / 2.0, sy + sh - OVERLAY_HEIGHT - OVERLAY_BOTTOM_OFFSET)
     };
 
     // Hide main window to prevent it from appearing when overlay activates the app
