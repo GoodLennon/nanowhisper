@@ -548,9 +548,8 @@ function App() {
         <button onClick={() => setView("settings")} className="text-xl px-1" style={{ color: "var(--text-secondary)" }}>&#9881;</button>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-4 pb-4">
       {updateVersion && (
-        <div className="mb-3 px-3 py-2 rounded-lg text-xs flex items-center justify-between"
+        <div className="mx-4 mb-0 mt-1 px-3 py-2 rounded-lg text-xs flex items-center justify-between"
           style={{ background: "#34c75920", border: "1px solid #34c75940", color: "#34c759" }}>
           <span>v{updateVersion} ready</span>
           <button onClick={async () => {
@@ -570,6 +569,8 @@ function App() {
           </button>
         </div>
       )}
+
+      <div className="flex-1 overflow-y-auto px-4 pb-4 pt-2">
       {errorMsg && (
         <div className="mb-3 px-3 py-2 rounded-lg text-xs" style={{ background: "#ff453a20", border: "1px solid #ff453a40", color: "#ff453a" }}>
           Transcription failed: {errorMsg}
